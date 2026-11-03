@@ -55,6 +55,13 @@ const canvasCursors = {
   pan: 'grab',
 } as const satisfies Record<CanvasTool, string | undefined>
 
+const nudgeSteps = new Map<string, Point>([
+  ['ArrowLeft', { x: -1, y: 0 }],
+  ['ArrowRight', { x: 1, y: 0 }],
+  ['ArrowUp', { x: 0, y: -1 }],
+  ['ArrowDown', { x: 0, y: 1 }],
+])
+
 type Gesture =
   | { kind: 'pan'; pointer: number; start: Point; translation: [number, number] }
   | {
@@ -95,6 +102,7 @@ export function CanvasWorkspace() {
   const gesture = useRef<Gesture | null>(null)
   const previousPageIndex = useRef<number | null>(null)
   const spaceHeld = useRef(false)
+  const nudge = useRef<{ originals: TransformFrame[]; offset: Point } | null>(null)
   const transformActive = useRef(false)
   const transformRevision = useRef<number | null>(null)
   const transformFinal = useRef<TransformFrame[]>([])
@@ -217,6 +225,7 @@ export function CanvasWorkspace() {
   const cancelGesture = useCallback(() => {
     const current = gesture.current
     gesture.current = null
+    nudge.current = null
     setSelectionRect(null)
     if (current?.kind === 'paint' || current?.kind === 'erase' || current?.kind === 'inpaint') {
       strokeUpdates.clear()
@@ -334,6 +343,16 @@ export function CanvasWorkspace() {
 
   useEffect(() => cancelGesture, [cancelGesture, canvasGeneration, canvasRevision, page?.id, tool])
 
+  const framesFor = useCallback(
+    (layers: string[]): TransformFrame[] =>
+      expandLayerSelection(page?.layers ?? [], layers).flatMap((id) => {
+        const layer = page?.layers.find((candidate) => candidate.id === id)
+        const frame = layer && selectableLayer(layer) ? controlFrame(layer, layerFrames) : null
+        return frame ? [{ element: id, frame }] : []
+      }),
+    [layerFrames, page],
+  )
+
   useEffect(() => {
     const editable = (target: EventTarget | null) =>
       target instanceof HTMLInputElement ||
@@ -375,6 +394,32 @@ export function CanvasWorkspace() {
           .catch(() => undefined)
         return
       }
+      const step = nudgeSteps.get(event.key)
+      if (step) {
+        // A focused control that already handled the arrow keeps it. A held arrow previews through
+        // one transform and commits on release, so key repeat stays a single undo step.
+        if (
+          event.defaultPrevented ||
+          command ||
+          event.shiftKey ||
+          event.altKey ||
+          gesture.current ||
+          !state.selectedLayers.length
+        )
+          return
+        if (!nudge.current) {
+          if (transformActive.current) return
+          const originals = framesFor(state.selectedLayers)
+          beginTransform(originals)
+          if (!transformActive.current) return
+          nudge.current = { originals, offset: { x: 0, y: 0 } }
+        }
+        event.preventDefault()
+        const { originals, offset } = nudge.current
+        nudge.current.offset = { x: offset.x + step.x, y: offset.y + step.y }
+        updateTransform(translateFrames(originals, nudge.current.offset))
+        return
+      }
       if (event.key.toLowerCase() === state.shortcuts.fit) {
         requestCanvasFit()
         return
@@ -394,6 +439,10 @@ export function CanvasWorkspace() {
     const up = (event: KeyboardEvent) => {
       if (event.key === 'Alt') event.preventDefault()
       if (event.code === 'Space') spaceHeld.current = false
+      if (nudge.current && nudgeSteps.has(event.key)) {
+        nudge.current = null
+        finishTransform()
+      }
     }
     const blur = () => {
       spaceHeld.current = false
@@ -408,7 +457,18 @@ export function CanvasWorkspace() {
       window.removeEventListener('keyup', up)
       window.removeEventListener('blur', blur)
     }
-  }, [cancelGesture, colorSampling, page, requestCanvasFit, selectLayers, setTool])
+  }, [
+    beginTransform,
+    cancelGesture,
+    colorSampling,
+    finishTransform,
+    framesFor,
+    page,
+    requestCanvasFit,
+    selectLayers,
+    setTool,
+    updateTransform,
+  ])
 
   const clientPagePoint = (clientX: number, clientY: number) =>
     pagePoint(
@@ -420,13 +480,6 @@ export function CanvasWorkspace() {
 
   const clientPhysicalPoint = (clientX: number, clientY: number) =>
     physicalPoint(clientX, clientY, surface.current!.getBoundingClientRect())
-
-  const framesFor = (layers: string[]): TransformFrame[] =>
-    expandLayerSelection(page?.layers ?? [], layers).flatMap((id) => {
-      const layer = page?.layers.find((candidate) => candidate.id === id)
-      const frame = layer && selectableLayer(layer) ? controlFrame(layer, layerFrames) : null
-      return frame ? [{ element: id, frame }] : []
-    })
 
   const moveGesture = (
     pointer: number,

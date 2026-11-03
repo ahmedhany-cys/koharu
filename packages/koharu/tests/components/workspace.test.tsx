@@ -374,6 +374,67 @@ describe('canvas interaction adapter', () => {
     )
   })
 
+  it('nudges the selection one image pixel per arrow press and commits on release', async () => {
+    installProject()
+    useKoharuStore.setState({ selectedLayers: ['element'] })
+    const commit = vi.spyOn(commands, 'commitTransform').mockResolvedValue(2)
+    const surface = renderWorkspace()
+
+    fireEvent.keyDown(surface, { key: 'ArrowRight' })
+    fireEvent.keyDown(surface, { key: 'ArrowRight', repeat: true })
+    fireEvent.keyDown(surface, { key: 'ArrowUp' })
+    expect(commit).not.toHaveBeenCalled()
+    fireEvent.keyUp(surface, { key: 'ArrowUp' })
+
+    await waitFor(() => expect(commit).toHaveBeenCalledOnce())
+    expect(canvas.beginTransform).toHaveBeenCalledOnce()
+    expect(commit).toHaveBeenLastCalledWith(1, [
+      { element: 'element', frame: { x: 12, y: 19, width: 100, height: 50, angle_degrees: 0 } },
+    ])
+
+    fireEvent.keyDown(surface, { key: 'ArrowLeft' })
+    expect(canvas.beginTransform).toHaveBeenCalledTimes(2)
+    fireEvent.keyUp(surface, { key: 'ArrowLeft' })
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2))
+    expect(commit).toHaveBeenLastCalledWith(1, [
+      { element: 'element', frame: { x: 9, y: 20, width: 100, height: 50, angle_degrees: 0 } },
+    ])
+  })
+
+  it('leaves arrow keys to text entry, handled controls and modified shortcuts', () => {
+    installProject()
+    const surface = renderWorkspace()
+    const input = document.createElement('input')
+    const listbox = document.createElement('div')
+    listbox.addEventListener('keydown', (event) => event.preventDefault())
+    document.body.append(input, listbox)
+
+    expect(fireEvent.keyDown(surface, { key: 'ArrowLeft' })).toBe(true)
+    act(() => useKoharuStore.setState({ selectedLayers: ['element'] }))
+    expect(fireEvent.keyDown(input, { key: 'ArrowLeft' })).toBe(true)
+    expect(fireEvent.keyDown(surface, { key: 'ArrowLeft', ctrlKey: true })).toBe(true)
+    fireEvent.keyDown(listbox, { key: 'ArrowDown' })
+
+    expect(canvas.beginTransform).not.toHaveBeenCalled()
+    input.remove()
+    listbox.remove()
+  })
+
+  it('discards a held nudge when the window loses focus', () => {
+    installProject()
+    useKoharuStore.setState({ selectedLayers: ['element'] })
+    const commit = vi.spyOn(commands, 'commitTransform').mockResolvedValue(2)
+    const surface = renderWorkspace()
+
+    fireEvent.keyDown(surface, { key: 'ArrowDown' })
+    fireEvent.blur(window)
+    fireEvent.keyUp(surface, { key: 'ArrowDown' })
+
+    expect(canvas.cancelTransform).toHaveBeenCalledOnce()
+    expect(canvas.finishTransform).not.toHaveBeenCalled()
+    expect(commit).not.toHaveBeenCalled()
+  })
+
   it('shows the automatic region behind the selected text controls', () => {
     installProject()
     queryClient.setQueryData(pageKey, (page: { layers: Layer[] }) => ({
